@@ -259,6 +259,7 @@ main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 /* 절대배치로 stage 크기에 딱 맞춘다. 그리드 안에서 height:100% 는 기준 높이가 없어
    이미지 원래 비율 높이로 커지고, 넘친 아래쪽이 overflow:hidden 에 잘렸다(아이패드 가로). */
 .stage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block}
+.stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;background:#000}
 .stage .ph{position:absolute;inset:0;display:grid;place-items:center;color:#8b93a1;text-align:center;padding:24px;font-size:14px}
 .recbadge{position:absolute;top:12px;left:12px;display:none;align-items:center;gap:7px;background:rgba(192,57,43,.94);color:#fff;padding:6px 12px;border-radius:999px;font-size:12.5px;font-weight:700}
 .recbadge.on{display:flex}
@@ -643,6 +644,7 @@ main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
     <section class="view" id="v-capture">
       <div class="stage">
         <img id="preview" alt="">
+        <video id="previewVideo" playsinline muted hidden></video>
         <div class="ph" id="previewPh">카메라 연결을 확인하는 중…</div>
         <div class="recbadge" id="recBadge"><i></i> 녹화 중</div>
       </div>
@@ -765,6 +767,18 @@ main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
         </div>
 
         <div class="card pad" style="margin-top:14px">
+          <h3>미니PC 카메라 (선택)</h3>
+          <div style="margin-top:14px">
+            <label class="f">미니PC 주소</label>
+            <input id="setMiniPc" class="inp" type="url" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="비워두면 자동으로 찾습니다">
+            <div class="hintline">이 사이트를 미니PC에서 열었다면 비워두세요. 태블릿 등 다른 기기에서는 미니PC 주소(예: 192.168.0.10)를 입력하세요. 연결되면 촬영 버튼이 미니PC 카메라로 동작하고, 없으면 이 기기의 카메라로 촬영합니다. <b id="miniPcStat" style="color:var(--ink)"></b></div>
+          </div>
+          <div class="row" style="margin-top:14px;gap:8px">
+            <button class="btn grow" id="btnMiniPcTest">미니PC 찾기</button>
+          </div>
+        </div>
+
+        <div class="card pad" style="margin-top:14px">
           <h3>표시</h3>
           <div class="muted" style="font-size:13.5px;margin-top:8px">
             화면 테마는 기기 설정(밝게/어둡게)을 따릅니다.
@@ -793,7 +807,7 @@ main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 
 <script>
 'use strict';
-const VERSION = '2.0';
+const VERSION = '2.1';
 
 /* ═══════════ 유틸 ═══════════ */
 const $  = (s,r)=> (r||document).querySelector(s);
@@ -853,7 +867,8 @@ const S = {
   home:{ team:null, player:null, reports:[], loading:false, q:'' },
   manage:{ team:null },
   ana:{ team:null, player:null, items:new Set(['머리 고정','어깨-골반 회전','무게중심']), q:'' },
-  cap:{ streaming:false, recording:false, recorded:false, t0:0, timer:null },
+  cap:{ streaming:false, recording:false, recorded:false, t0:0, timer:null, mode:'browser', stream:null, recorder:null, chunks:[], blob:null, meta:null },
+  miniPc:{ url:null, ok:false, checking:false },
   job:{ pid:null, rid:null, cloudJobId:null, polling:false, stop:false },
   rep:{ pid:null, rid:null, player:null, summary:null, series:null, avail:new Set(), sel:new Set() },
 };
@@ -1413,7 +1428,7 @@ function renderAnaRight(){
     + '<div class="card pad"><div class="sect-t">타격 메커니즘 분석</div><div class="optlist">'+opts+'</div></div>'
     + '<div class="card pad" style="opacity:.6"><div class="sect-t">투구 분석</div>'
     + '<div class="muted" style="font-size:13.5px">투구 메커니즘 · 템포 · 직구/변화구 싱크로율은 준비 중입니다.</div></div>'
-    + '<button class="btn primary lg block" id="anaGoCap"'+(st.items.size?'':' disabled')+'>영상 올려서 분석</button>'
+    + '<button class="btn primary lg block" id="anaGoCap"'+(st.items.size?'':' disabled')+'>촬영 / 업로드로 분석</button>'
     + '</div>';
 
   const ed = $('#hpEdit'); if (ed) ed.onclick = ()=> editPlayer(p.id);
@@ -1425,26 +1440,20 @@ function renderAnaRight(){
   $('#anaGoCap').onclick = ()=> chooseCaptureMode();
 }
 
-/* 클라우드판 — 촬영은 각 기기가 하고, 찍은 영상을 올리는 방식으로 바로 갑니다. */
+/* 클라우드판 — 카메라 촬영(미니PC 또는 이 기기 카메라)과 영상 업로드 둘 다 지원합니다. */
 function chooseCaptureMode(){
-  pickCloudVideo();
-}
-function chooseCaptureMode_sheetUnused(){
   const card = (mode, icon, t, s) => '<button class="fcard" data-mode="'+mode+'"><span class="ic">'+icon+'</span><b>'+t+'</b><span>'+s+'</span></button>';
   openSheet('<h3>촬영 방식</h3>'
     + '<div class="fgrid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">'
-    + card('single', '<svg class="i lg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
-           '한 스윙 촬영', '스윙 한 번을 찍고 바로 분석합니다.')
-    + card('session', '<svg class="i lg" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/><path d="M6 10h7M6 14h4"/></svg>',
-           '연속 스윙 촬영', '스윙 5~10번을 한 번에 이어서 찍습니다. 타격음마다 잘라 스윙별로 분석하고, 기록은 한 폴더로 묶입니다.')
+    + card('camera', '<svg class="i lg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
+           '카메라로 촬영', '지금 찍고 바로 분석합니다. 미니PC가 연결되어 있으면 미니PC 카메라, 아니면 이 기기의 카메라로 촬영합니다.')
     + card('upload', '<svg class="i lg" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v5h16v-5"/></svg>',
-           '영상 업로드', '태블릿이나 미니PC에 저장된 영상을 서버로 보내 분석합니다.')
+           '영상 업로드', '기기에 저장된 영상을 올려 분석합니다.')
     + '</div><div class="acts"><button class="btn" data-close>취소</button></div>');
   $$('#sheetPanel [data-mode]').forEach(b => b.onclick = ()=>{
     closeSheet();
-    if (b.dataset.mode === 'session') enterSession();
-    else if (b.dataset.mode === 'upload') pickCloudVideo();
-    else enterCapture();
+    if (b.dataset.mode === 'camera') enterCapture();
+    else pickCloudVideo();
   });
 }
 
@@ -1482,7 +1491,7 @@ function pickCloudVideo(){
   input.click();
 }
 
-async function submitCloudVideo(file){
+async function submitCloudVideo(file, captureMeta){
   const p = playerById(S.ana.player);
   if (!p) return;
   const items = Array.from(S.ana.items);
@@ -1503,7 +1512,7 @@ async function submitCloudVideo(file){
     const created = await api('/api/cloud/jobs', {method:'POST', timeout:20000, body:{
       player_id:p.id,
       analyses:cloudAnalyses(items),
-      capture:{handedness:bs},
+      capture:Object.assign({handedness:bs}, captureMeta || {}),
       media:{content_length:file.size, content_type:file.type || 'video/mp4', filename:file.name},
     }});
     S.job.rid = created.report_id;
@@ -1564,14 +1573,67 @@ $('#anaTeamBtn').onclick = ()=> pickTeam(S.ana.team, t=>{ S.ana.team=t; S.ana.pl
 $('#anaSearch').oninput = e => { S.ana.q = e.target.value; $('#anaPlayers').innerHTML = playerListHTML(S.ana.team, S.ana.q, S.ana.player);
   $$('#anaPlayers .lrow').forEach(b => b.onclick = ()=>{ S.ana.player=b.dataset.p; renderAna(); }); };
 
-/* ═══════════ 촬영 ═══════════ */
-function enterCapture(){
+/* ═══════════ 촬영 ═══════════
+   두 갈래를 지원합니다.
+   - server: 미니PC(분석PC) 서버가 잡히면 카메라 제어는 미니PC가, 분석은 그대로 클라우드가 합니다.
+   - browser: 못 찾으면 이 사이트를 연 기기의 카메라를 브라우저가 직접 열어 찍고 올립니다. */
+const MINIPC_CANDIDATES = ['http://127.0.0.1:5000', 'http://127.0.0.1:5050'];
+function miniPcCandidates(){
+  const saved = normSrv(LS.get('miniPcUrl',''));
+  const list = [];
+  if (saved) list.push(saved);
+  MINIPC_CANDIDATES.forEach(u => { if (!list.includes(u)) list.push(u); });
+  return list;
+}
+async function probeMiniPc(){
+  if (S.miniPc.checking) return S.miniPc.ok;
+  S.miniPc.checking = true;
+  const stat = $('#miniPcStat');
+  try{
+    for (const cand of miniPcCandidates()){
+      try{
+        const ctrl = new AbortController();
+        const to = setTimeout(()=>ctrl.abort(), 2500);
+        const res = await fetch(cand + '/capture_status', {signal:ctrl.signal, cache:'no-store'});
+        clearTimeout(to);
+        if (!res.ok) continue;
+        S.miniPc.url = cand; S.miniPc.ok = true;
+        if (stat) stat.textContent = '연결됨 — ' + cand;
+        return true;
+      }catch(e){}
+    }
+    S.miniPc.ok = false;
+    if (stat) stat.textContent = '미니PC를 못 찾았습니다 — 이 기기 카메라로 촬영합니다';
+    return false;
+  }finally{ S.miniPc.checking = false; }
+}
+async function miniApi(path, opts){
+  opts = opts || {};
+  const ctrl = new AbortController();
+  const to = setTimeout(()=>ctrl.abort(), opts.timeout || 15000);
+  try{
+    const res = await fetch(S.miniPc.url + path, {
+      method: opts.method || 'GET',
+      headers: opts.body ? {'Content-Type':'application/json'} : undefined,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      signal: ctrl.signal, cache:'no-store',
+    });
+    let data = null;
+    try{ data = await res.json(); }catch(e){}
+    if (!res.ok){ const err = new Error((data && data.error) || ('HTTP ' + res.status)); err.status = res.status; throw err; }
+    return data;
+  }finally{ clearTimeout(to); }
+}
+
+async function enterCapture(){
   const p = playerById(S.ana.player);
   if (!p) return;
-  S.cap.recording = false; S.cap.recorded = false;
+  toast('카메라를 확인하는 중…', 1200);
+  await probeMiniPc();
+  S.cap.mode = S.miniPc.ok ? 'server' : 'browser';
+  S.cap.recording = false; S.cap.recorded = false; S.cap.blob = null; S.cap.meta = null;
   $('#capWho').textContent = p.name + ' · ' + Array.from(S.ana.items).map(optionLabel).join(', ');
   $('#capTimer').textContent = '0:00';
-  $('#capHint').textContent = '녹화 버튼을 누르세요';
   $('#btnAnalyze').disabled = true;
   $('#recBadge').classList.remove('on');
   $('#btnRec').classList.remove('rec');
@@ -1580,17 +1642,50 @@ function enterCapture(){
 }
 
 function startPreview(){
-  const img = $('#preview'), ph = $('#previewPh');
-  ph.textContent = '카메라 화면을 불러오는 중…';
+  const img = $('#preview'), video = $('#previewVideo'), ph = $('#previewPh');
+  if (S.cap.mode === 'server'){
+    video.hidden = true; img.hidden = false;
+    $('#capHint').textContent = '미니PC 카메라 연결됨 — 녹화 버튼을 누르세요';
+    ph.textContent = '미니PC 카메라 화면을 불러오는 중…';
+    ph.style.display = 'grid';
+    img.onload  = ()=>{ ph.style.display='none'; };
+    img.onerror = ()=>{ ph.style.display='grid'; ph.textContent = '미니PC 카메라 화면을 받지 못했습니다. 미니PC의 카메라 연결을 확인하세요.'; };
+    img.src = S.miniPc.url + '/video_feed?ts=' + Date.now();
+    S.cap.streaming = true;
+    return;
+  }
+  /* 브라우저 카메라 — 이 사이트를 연 기기의 카메라를 직접 엽니다. */
+  img.hidden = true; video.hidden = false;
+  $('#capHint').textContent = '이 기기 카메라로 촬영 — 녹화 버튼을 누르세요';
+  ph.textContent = '카메라를 여는 중…';
   ph.style.display = 'grid';
-  img.onload  = ()=>{ ph.style.display='none'; };
-  img.onerror = ()=>{ ph.style.display='grid'; ph.textContent = '카메라 화면을 받지 못했습니다. 분석PC의 카메라 연결을 확인하세요.'; };
-  img.src = url('/video_feed?ts=' + Date.now());
-  S.cap.streaming = true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder){
+    ph.textContent = '이 브라우저는 카메라 촬영을 지원하지 않습니다. 돌아가서 “영상 업로드”를 이용하세요.';
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({
+    video:{ facingMode:'environment', width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:60} },
+    audio:true,
+  }).then(stream=>{
+    S.cap.stream = stream; S.cap.streaming = true;
+    video.srcObject = stream;
+    video.onplaying = ()=>{ ph.style.display = 'none'; };
+    video.play().catch(()=>{});
+  }).catch(e=>{
+    ph.style.display = 'grid';
+    ph.textContent = '카메라를 열 수 없습니다 (' + ((e && e.name) || '오류') + '). 브라우저의 카메라 권한을 허용하거나 돌아가서 “영상 업로드”를 이용하세요.';
+  });
 }
 function stopPreview(){
-  const img = $('#preview');
-  img.removeAttribute('src'); img.onload = img.onerror = null;
+  const img = $('#preview'), video = $('#previewVideo');
+  img.removeAttribute('src'); img.onload = img.onerror = null; img.hidden = false;
+  if (S.cap.recorder){
+    S.cap.recorder.ondataavailable = null; S.cap.recorder.onstop = null;
+    if (S.cap.recorder.state !== 'inactive'){ try{ S.cap.recorder.stop(); }catch(e){} }
+    S.cap.recorder = null;
+  }
+  if (S.cap.stream){ S.cap.stream.getTracks().forEach(t=>t.stop()); S.cap.stream = null; }
+  video.srcObject = null; video.hidden = true;
   S.cap.streaming = false;
   clearInterval(S.cap.timer); S.cap.timer = null;
 }
@@ -1598,70 +1693,119 @@ function stopPreview(){
 $('#btnRec').onclick = async ()=>{
   const btn = $('#btnRec'); btn.disabled = true;
   try{
-    if (!S.cap.recording){
-      await api('/start', {method:'POST', body:{}, timeout:10000});
-      S.cap.recording = true; S.cap.recorded = false; S.cap.t0 = Date.now();
-      btn.classList.add('rec'); $('#recBadge').classList.add('on');
-      $('#capHint').textContent = '스윙 후 정지를 누르세요';
-      $('#btnAnalyze').disabled = true;
-      clearInterval(S.cap.timer);
-      S.cap.timer = setInterval(()=>{ $('#capTimer').textContent = fmtDur(Date.now()-S.cap.t0); }, 200);
-    } else {
-      // 응답을 기다리기 전에 먼저 멈춘다.
-      // /stop 은 세그먼트 concat -> 트림 -> H.264 변환까지 마치고 돌아오므로
-      // await 뒤에서 멈추면 그 시간(수 초)만큼 타이머가 계속 올라간다.
-      S.cap.recording = false;
-      btn.classList.remove('rec'); $('#recBadge').classList.remove('on');
-      clearInterval(S.cap.timer); S.cap.timer = null;
-      $('#capHint').textContent = '저장 중…';
-      try{
-        // 변환 시간은 녹화 길이에 비례한다. nvenc 가 없으면 특히 오래 걸리므로 넉넉히.
-        const r = await api('/stop', {method:'POST', body:{}, timeout:180000});
-        S.cap.recorded = true;
-        $('#btnAnalyze').disabled = false;
-        const c = r && r.capture;
-        $('#capHint').textContent = c
-          ? ('저장 완료 · ' + Number(c.output_duration_sec).toFixed(1) + '초 · ' + c.measured_fps + 'fps')
-          : '분석하거나 다시 녹화하세요';
-        if (c) $('#capTimer').textContent = fmtDur(Number(c.output_duration_sec) * 1000);
-      }catch(e){
-        S.cap.recorded = false;
-        $('#btnAnalyze').disabled = true;
-        $('#capHint').textContent = '저장 실패 — 다시 녹화하세요';
-        throw e;
-      }
-    }
+    if (S.cap.mode === 'server') await recToggleServer(btn);
+    else await recToggleBrowser(btn);
   }catch(e){ toast('녹화 제어 실패: ' + e.message, 3200); }
   finally{ btn.disabled = false; }
 };
 
-$('#btnAnalyze').onclick = async ()=>{
-  const p = playerById(S.ana.player);
-  if (!p) return;
-  const bs = batSide(p.lr);
-  const items = Array.from(S.ana.items);
-  if (items.includes('손 이동경로') && !bs){ toast('손 이동경로 분석에는 타격 손(L/R)이 필요합니다', 3200); return; }
-
-  const flags = {};
-  OPT_ORDER.forEach(k => { flags[k] = S.ana.items.has(k); });
-  const options = Object.assign({}, flags);
-  if (bs) options.lr = bs;
-
+function recUiStart(btn){
+  S.cap.recording = true; S.cap.recorded = false; S.cap.t0 = Date.now();
+  btn.classList.add('rec'); $('#recBadge').classList.add('on');
+  $('#capHint').textContent = '스윙 후 정지를 누르세요';
   $('#btnAnalyze').disabled = true;
-  try{
-    const r = await api('/call_model', {method:'POST', timeout:60000, body:{
-      player_id: p.id,
-      options: options,
-      analysis_options: flags,
-      video_path: 'temp/original_video.mp4',
-    }});
-    if (!r || !r.report_id) throw new Error('서버가 report_id를 주지 않았습니다.');
-    stopPreview();
-    startJob(p, r.report_id, items);
-  }catch(e){
-    $('#btnAnalyze').disabled = false;
-    toast('분석 요청 실패: ' + e.message, 3600);
+  clearInterval(S.cap.timer);
+  S.cap.timer = setInterval(()=>{ $('#capTimer').textContent = fmtDur(Date.now()-S.cap.t0); }, 200);
+}
+function recUiStop(btn){
+  S.cap.recording = false;
+  btn.classList.remove('rec'); $('#recBadge').classList.remove('on');
+  clearInterval(S.cap.timer); S.cap.timer = null;
+}
+
+/* 미니PC 카메라 — 녹화·변환은 미니PC가 하고, 끝나면 파일을 받아 클라우드로 올립니다. */
+async function recToggleServer(btn){
+  if (!S.cap.recording){
+    await miniApi('/start', {method:'POST', body:{file:'temp/cloud_capture.mp4'}, timeout:10000});
+    recUiStart(btn);
+    return;
   }
+  // 응답을 기다리기 전에 먼저 멈춘다. /stop 은 변환까지 마치고 돌아온다.
+  recUiStop(btn);
+  try{
+    $('#capHint').textContent = '미니PC에서 저장 중…';
+    const r = await miniApi('/stop', {method:'POST', body:{}, timeout:180000});
+    $('#capHint').textContent = '녹화 파일을 가져오는 중…';
+    const res = await fetch(S.miniPc.url + '/media/temp/cloud_capture.mp4', {cache:'no-store'});
+    if (!res.ok) throw new Error('녹화 파일을 받지 못했습니다 (HTTP ' + res.status + ')');
+    const blob = await res.blob();
+    if (!blob.size) throw new Error('녹화 파일이 비어 있습니다');
+    S.cap.blob = new File([blob], 'minipc_capture.mp4', {type:'video/mp4'});
+    const c = r && r.capture;
+    const meta = {};
+    if (c && c.measured_fps) meta.measured_fps = c.measured_fps;
+    if (c && c.width) meta.width = c.width;
+    if (c && c.height) meta.height = c.height;
+    S.cap.meta = Object.keys(meta).length ? meta : null;
+    S.cap.recorded = true;
+    $('#btnAnalyze').disabled = false;
+    $('#capHint').textContent = c
+      ? ('저장 완료 · ' + Number(c.output_duration_sec).toFixed(1) + '초 · ' + c.measured_fps + 'fps')
+      : '분석하거나 다시 녹화하세요';
+    if (c) $('#capTimer').textContent = fmtDur(Number(c.output_duration_sec) * 1000);
+  }catch(e){
+    S.cap.recorded = false; S.cap.blob = null;
+    $('#btnAnalyze').disabled = true;
+    $('#capHint').textContent = '저장 실패 — 다시 녹화하세요';
+    throw e;
+  }
+}
+
+/* 브라우저 카메라 — 이 기기의 카메라/마이크로 직접 녹화합니다. */
+function pickMime(){
+  const cands = ['video/mp4;codecs="avc1.42E01E,mp4a.40.2"', 'video/mp4',
+                 'video/webm;codecs=h264', 'video/webm;codecs=vp9,opus', 'video/webm'];
+  for (const c of cands){ try{ if (MediaRecorder.isTypeSupported(c)) return c; }catch(e){} }
+  return '';
+}
+async function recToggleBrowser(btn){
+  if (!S.cap.recording){
+    if (!S.cap.stream) throw new Error('카메라가 아직 열리지 않았습니다');
+    const mime = pickMime();
+    const rec = new MediaRecorder(S.cap.stream,
+      mime ? {mimeType:mime, videoBitsPerSecond:12000000} : undefined);
+    S.cap.chunks = [];
+    rec.ondataavailable = e=>{ if (e.data && e.data.size) S.cap.chunks.push(e.data); };
+    rec.onstop = ()=>{
+      const type = (rec.mimeType || 'video/webm').split(';')[0];
+      const ext = type.includes('mp4') ? 'mp4' : 'webm';
+      S.cap.blob = new File(S.cap.chunks, 'browser_capture.' + ext, {type:type});
+      S.cap.chunks = [];
+      const track = S.cap.stream && S.cap.stream.getVideoTracks()[0];
+      const set = (track && track.getSettings) ? track.getSettings() : {};
+      const meta = {};
+      if (set.frameRate) meta.measured_fps = Math.round(set.frameRate);
+      if (set.width) meta.width = set.width;
+      if (set.height) meta.height = set.height;
+      S.cap.meta = Object.keys(meta).length ? meta : null;
+      S.cap.recorded = true;
+      $('#btnAnalyze').disabled = false;
+      const ms = Date.now() - S.cap.t0;
+      $('#capTimer').textContent = fmtDur(ms);
+      $('#capHint').textContent = '저장 완료 · ' + (ms/1000).toFixed(1) + '초 — 분석하거나 다시 녹화하세요';
+    };
+    S.cap.recorder = rec;
+    rec.start(250);
+    recUiStart(btn);
+    return;
+  }
+  recUiStop(btn);
+  $('#capHint').textContent = '저장 중…';
+  if (S.cap.recorder && S.cap.recorder.state !== 'inactive') S.cap.recorder.stop();
+}
+
+$('#btnAnalyze').onclick = async ()=>{
+  /* 클라우드판 — 촬영된 영상은 늘 클라우드로 올려 분석합니다 (로컬 /call_model 경로 없음). */
+  const p = playerById(S.ana.player);
+  if (!p || !S.cap.blob) return;
+  const items = Array.from(S.ana.items);
+  const bs = batSide(p.lr);
+  if (items.includes('손 이동경로') && !bs){ toast('손 이동경로 분석에는 타격 손(L/R)이 필요합니다', 3200); return; }
+  $('#btnAnalyze').disabled = true;
+  const blob = S.cap.blob, meta = S.cap.meta;
+  S.cap.blob = null; S.cap.meta = null; S.cap.recorded = false;
+  stopPreview();
+  submitCloudVideo(blob, meta);
 };
 
 /* ═══════════ 진행 상황 ═══════════ */
@@ -3866,6 +4010,7 @@ async function bootstrap(){
 
   renderHome(); go('home', true);
   pingLoop();
+  probeMiniPc();
 }
 
 $('#btnLogin').onclick = async ()=>{
@@ -3922,6 +4067,15 @@ $('#btnPing').onclick = async ()=>{
   const t0 = Date.now();
   try{ await api('/api/health', {timeout:8000}); $('#setDiag').textContent = '정상 · 응답 ' + (Date.now()-t0) + 'ms'; setConn('ok','연결됨'); }
   catch(e){ $('#setDiag').textContent = '실패: ' + e.message; setConn('bad','서버 없음'); }
+};
+$('#setMiniPc').value = LS.get('miniPcUrl','');
+$('#setMiniPc').addEventListener('change', ()=>{ LS.set('miniPcUrl', normSrv($('#setMiniPc').value)); });
+$('#btnMiniPcTest').onclick = async ()=>{
+  LS.set('miniPcUrl', normSrv($('#setMiniPc').value));
+  const stat = $('#miniPcStat'); stat.textContent = '찾는 중…';
+  const ok = await probeMiniPc();
+  toast(ok ? '미니PC를 찾았습니다 — 촬영은 미니PC 카메라로 동작합니다'
+           : '미니PC를 못 찾았습니다 — 이 기기 카메라로 촬영합니다', 2800);
 };
 $('#btnClearCache').onclick = async ()=>{
   if (!S.rep.pid){ toast('먼저 리포트를 한 번 열어주세요'); return; }
