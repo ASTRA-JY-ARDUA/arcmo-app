@@ -900,7 +900,9 @@ function cloudMap(path){
     const first = (decodeURIComponent(m[3] || '').split(',')[0] || '').trim() || 'skeleton';
     return '/api/v1/reports/' + m[1] + '/' + m[2] + '/' + encodeURIComponent(first);
   }
-  return path; // /api/pose, /api/slowmo_video 등 — 클라우드에 없음. 호출부에서 실패를 처리합니다.
+  m = path.match(/^\/api\/pose\?player_id=([^&]+)&report_id=([^&]+)/);
+  if (m) return '/api/v1/reports/' + m[1] + '/' + m[2] + '/pose';
+  return path; // /api/slowmo_video 등 — 클라우드에 없음. 호출부에서 실패를 처리합니다.
 }
 
 function url(path){
@@ -1670,7 +1672,7 @@ function startPreview(){
     return;
   }
   navigator.mediaDevices.getUserMedia({
-    video:{ facingMode:'environment', width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:60} },
+    video:{ facingMode:'environment', width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:150} },
     audio:true,
   }).then(stream=>{
     S.cap.stream = stream; S.cap.streaming = true;
