@@ -1450,7 +1450,7 @@ function chooseCaptureMode(){
     + card('camera', '<svg class="i lg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
            '카메라로 촬영', '지금 찍고 바로 분석합니다. 미니PC가 연결되어 있으면 미니PC 카메라, 아니면 이 기기의 카메라로 촬영합니다.')
     + card('upload', '<svg class="i lg" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v5h16v-5"/></svg>',
-           '영상 업로드', '기기에 저장된 영상을 올려 분석합니다.')
+           '영상 업로드', '기기에 저장된 영상을 올려 분석합니다. 여러 개를 한 번에 고르면 차례로 분석합니다.')
     + '</div><div class="acts"><button class="btn" data-close>취소</button></div>');
   $$('#sheetPanel [data-mode]').forEach(b => b.onclick = ()=>{
     closeSheet();
@@ -1485,10 +1485,12 @@ function pickCloudVideo(){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'video/*';
-  input.setAttribute('capture', 'environment');
+  input.multiple = true;   // 여러 개를 한 번에 고를 수 있습니다
   input.onchange = ()=>{
-    const file = input.files && input.files[0];
-    if (file) submitCloudVideo(file);
+    const files = Array.from(input.files || []).filter(f => f && f.size);
+    if (!files.length) return;
+    if (files.length === 1) submitCloudVideo(files[0]);
+    else submitCloudQueue(files);
   };
   input.click();
 }
@@ -1571,6 +1573,84 @@ async function pollCloudJob(player, jobId, reportId, want){
     await sleep(1800);
   }
 }
+/* 여러 영상 일괄 분석 — 고른 순서대로 하나씩 올리고 분석합니다.
+   하나가 실패해도 나머지는 계속 갑니다. 전부 끝나면 마지막 결과를 엽니다. */
+async function submitOneCloud(p, file, items, bs, want){
+  const created = await api('/api/cloud/jobs', {method:'POST', timeout:20000, body:{
+    player_id:p.id,
+    analyses:cloudAnalyses(items),
+    capture:Object.assign({handedness:bs}, {}),
+    media:{content_length:file.size, content_type:file.type || 'video/mp4', filename:file.name},
+  }});
+  const uploaded = await fetch(created.upload.url, {method:'PUT', body:file});
+  if (!uploaded.ok) throw new Error('영상 업로드 HTTP ' + uploaded.status);
+  renderSteps(cloudStepState('gpu_queue'), want, false);
+  await api('/api/cloud/jobs/'+encodeURIComponent(created.job_id)+'/upload-complete', {
+    method:'POST', body:{}, timeout:30000,
+  });
+  const started = Date.now();
+  while (S.job.polling && !S.job.stop){
+    const r = await api('/api/cloud/jobs/'+encodeURIComponent(created.job_id), {timeout:320000});
+    const failed = r.status === 'failed' ? (r.error || 'GPU 분석 실패') : null;
+    renderSteps(cloudStepState(r.local_ready ? 'complete' : r.stage, failed), want,
+      (r.status === 'ready' || r.status === 'partial') && r.local_ready);
+    if (failed) throw new Error(failed);
+    if ((r.status === 'ready' || r.status === 'partial') && r.local_ready){
+      return {rid: created.report_id, jobId: created.job_id, partial: r.status === 'partial'};
+    }
+    if (Date.now() - started > 20*60*1000) throw new Error('분석이 20분을 넘겼습니다');
+    await sleep(1800);
+  }
+  throw new Error('중단됨');
+}
+
+async function submitCloudQueue(files){
+  const p = playerById(S.ana.player);
+  if (!p) return;
+  const items = Array.from(S.ana.items);
+  const bs = batSide(p.lr);
+  if (items.includes('손 이동경로') && !bs){ toast('손 이동경로 분석에는 타격 손(L/R)이 필요합니다', 3200); return; }
+  const ok_files = [];
+  for (const f of files){
+    if (f.size > 500*1024*1024){ toast(f.name + ' — 500MB를 넘어 건너뜁니다', 3200); continue; }
+    ok_files.push(f);
+  }
+  if (!ok_files.length) return;
+
+  const want = ['cloud_upload','gpu_queue','cloud_analysis','result_sync'];
+  S.job = {pid:p.id, rid:null, cloudJobId:null, polling:true, stop:false};
+  $('#progOpen').disabled = true;
+  go('progress');
+  const results = [];
+  for (let i = 0; i < ok_files.length; i++){
+    if (S.job.stop) break;
+    const f = ok_files[i];
+    $('#progTitle').textContent = p.name + ' · 영상 ' + (i+1) + '/' + ok_files.length;
+    $('#progSub').textContent = f.name + ' · ' + items.map(optionLabel).join(', ');
+    $('#progErr').textContent = '';
+    renderSteps(cloudStepState('upload'), want, false);
+    try{
+      const r = await submitOneCloud(p, f, items, bs, want);
+      results.push({name:f.name, ok:true, rid:r.rid, partial:r.partial});
+      S.job.rid = r.rid;   // '리포트 열기'는 마지막 성공 건을 엽니다
+    }catch(e){
+      results.push({name:f.name, ok:false, err:e.message});
+    }
+  }
+  S.job.polling = false;
+  const okN = results.filter(r => r.ok).length;
+  const failN = results.length - okN;
+  $('#progTitle').textContent = '일괄 분석 완료 ' + okN + '/' + ok_files.length;
+  $('#progSub').textContent = results.map(r => (r.ok ? '✓ ' : '✗ ') + r.name).join('  ·  ');
+  if (failN) $('#progErr').textContent = '실패 ' + failN + '개 — ' +
+    results.filter(r => !r.ok).map(r => r.name + ': ' + r.err).join(' / ');
+  if (okN){
+    $('#progOpen').disabled = false;
+    if (results.some(r => r.partial)) toast('일부 지표는 검출 신뢰도가 부족합니다', 3600);
+    if (S.view === 'progress' && S.job.rid) openReport(p.id, S.job.rid);
+  }
+}
+
 $('#anaTeamBtn').onclick = ()=> pickTeam(S.ana.team, t=>{ S.ana.team=t; S.ana.player=null; S.ana.q=''; $('#anaSearch').value=''; renderAna(); });
 $('#anaSearch').oninput = e => { S.ana.q = e.target.value; $('#anaPlayers').innerHTML = playerListHTML(S.ana.team, S.ana.q, S.ana.player);
   $$('#anaPlayers .lrow').forEach(b => b.onclick = ()=>{ S.ana.player=b.dataset.p; renderAna(); }); };
@@ -1583,7 +1663,13 @@ const MINIPC_CANDIDATES = ['http://127.0.0.1:5000', 'http://127.0.0.1:5050'];
 function miniPcCandidates(){
   const saved = normSrv(LS.get('miniPcUrl',''));
   const list = [];
-  if (saved) list.push(saved);
+  // 이 페이지를 미니PC가 띄워 준 경우(http://arcmo.local:5000/app 등) —
+  // 페이지를 준 서버가 곧 카메라 서버다. 가장 먼저 본다.
+  // (https 배포 주소에서 연 경우는 제외 — 그 서버는 카메라가 없고,
+  //  https 페이지에서 http 기기 호출은 브라우저가 막는다)
+  const origin = /^http:\/\//i.test(location.origin) ? location.origin : '';
+  if (origin) list.push(origin);
+  if (saved && !list.includes(saved)) list.push(saved);
   MINIPC_CANDIDATES.forEach(u => { if (!list.includes(u)) list.push(u); });
   return list;
 }
