@@ -1449,12 +1449,15 @@ function chooseCaptureMode(){
     + '<div class="fgrid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">'
     + card('camera', '<svg class="i lg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
            '카메라로 촬영', '지금 찍고 바로 분석합니다. 미니PC가 연결되어 있으면 미니PC 카메라, 아니면 이 기기의 카메라로 촬영합니다.')
+    + card('session', '<svg class="i lg" viewBox="0 0 24 24"><rect x="3" y="4" width="13" height="16" rx="2"/><path d="M16 8h5v12h-5"/></svg>',
+           '연속 촬영 모드', '한 번 길게 찍으면 타격음마다 잘라 스윙별로 분석합니다. 미니PC가 연결되어 있어야 합니다.')
     + card('upload', '<svg class="i lg" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v5h16v-5"/></svg>',
            '영상 업로드', '기기에 저장된 영상을 올려 분석합니다. 여러 개를 한 번에 고르면 차례로 분석합니다.')
     + '</div><div class="acts"><button class="btn" data-close>취소</button></div>');
   $$('#sheetPanel [data-mode]').forEach(b => b.onclick = ()=>{
     closeSheet();
     if (b.dataset.mode === 'camera') enterCapture();
+    else if (b.dataset.mode === 'session') enterSessionCloud();
     else pickCloudVideo();
   });
 }
@@ -1983,6 +1986,27 @@ $('#progBack').onclick = ()=>{ S.job.stop = true; go('analysis'); };
 S.ses = { recording:false, busy:false, seq:0, t0:0, timer:null, tick:null, limitWarned:false,
           cur:null, maxSec:300 };
 
+/* 연속 촬영의 대화 상대는 언제나 미니PC(캡처 서버)입니다. 클라우드는 분석만 합니다. */
+function sesUrl(path){
+  return S.cloud ? ((S.miniPc.url || '') + path) : url(path);
+}
+async function sesApi(path, opts){
+  if (S.cloud){
+    if (!S.miniPc.ok){ const err = new Error('미니PC가 연결되지 않았습니다'); err.status = 0; throw err; }
+    return miniApi(path, opts);
+  }
+  return api(path, opts);
+}
+async function enterSessionCloud(){
+  toast('미니PC를 확인하는 중…', 1200);
+  await probeMiniPc();
+  if (!S.miniPc.ok){
+    toast('연속 촬영은 미니PC 연결이 필요합니다. 설정에서 미니PC 주소를 확인하세요.', 4200);
+    return;
+  }
+  enterSession();
+}
+
 const SES_STATUS = { recording:'녹화 중', queued:'차례 기다리는 중', saving:'영상 저장 · 타격음 찾는 중',
                      splitting:'스윙 자르는 중', analyzing:'스윙별 분석 중',
                      done:'완료', failed:'실패', interrupted:'중단됨' };
@@ -2021,8 +2045,8 @@ function startSessionPreview(){
   ph.textContent = '카메라 화면을 불러오는 중…';
   ph.style.display = 'grid';
   img.onload  = ()=>{ ph.style.display = 'none'; };
-  img.onerror = ()=>{ ph.style.display = 'grid'; ph.textContent = '카메라 화면을 받지 못했습니다. 분석PC의 카메라 연결을 확인하세요.'; };
-  img.src = url('/video_feed?ts=' + Date.now());
+  img.onerror = ()=>{ ph.style.display = 'grid'; ph.textContent = '카메라 화면을 받지 못했습니다. 미니PC의 카메라 연결을 확인하세요.'; };
+  img.src = sesUrl('/video_feed?ts=' + Date.now());
 }
 function stopSessionPreview(){
   const img = $('#sPreview');
@@ -2055,7 +2079,7 @@ async function toggleSessionRec(){
   S.ses.busy = true; btn.disabled = true; S.ses.seq++;
   try{
     if (!S.ses.recording){
-      const r = await api('/api/session/start', {method:'POST', timeout:10000,
+      const r = await sesApi('/api/session/start', {method:'POST', timeout:10000,
         body:{player_id: S.ana.player, items: Array.from(S.ana.items)}});
       S.ses.maxSec = r.max_sec || S.ses.maxSec;
       S.ses.cur = r.session;
@@ -2063,15 +2087,15 @@ async function toggleSessionRec(){
       if (r.session && r.session.note) toast(r.session.note, 3200);
     } else {
       setSessionRecording(false);                 // 응답 전에 먼저 멈춘다 (촬영 화면과 같은 이유)
-      const r = await api('/api/session/stop', {method:'POST', body:{}, timeout:15000});
+      const r = await sesApi('/api/session/stop', {method:'POST', body:{}, timeout:15000});
       S.ses.cur = r.session || S.ses.cur;
       if (S.ses.cur) $('#sTimer').textContent = fmtDur((S.ses.cur.requested_duration_sec || 0) * 1000);
     }
     renderSessionPanel();
   }catch(e){
-    // 404 = 서버에 연속 스윙 촬영 API 가 없음 → 이 기능이 생기기 전에 켠 server.py 가 떠 있는 경우
+    // 404 = 미니PC에 연속 스윙 촬영 API 가 없음 → 이 기능이 생기기 전 버전이 떠 있는 경우
     toast(e.status === 404
-      ? '분석PC의 서버가 이전 버전입니다. server.py 를 껐다가 다시 켜세요 (연속 스윙 촬영 API 없음)'
+      ? '미니PC의 서버가 이전 버전입니다. 미니PC를 업데이트하세요 (연속 촬영 API 없음)'
       : '녹화 제어 실패: ' + e.message, 5000);
   }finally{
     S.ses.busy = false; btn.disabled = false; S.ses.seq++;
@@ -2209,7 +2233,7 @@ function renderSessionPanel(){
 }
 
 async function refreshSession(sid){
-  const r = await api('/api/sessions/' + encodeURIComponent(sid), {timeout:8000});
+  const r = await sesApi('/api/sessions/' + encodeURIComponent(sid), {timeout:8000});
   if (S.ses.cur && S.ses.cur.session_id !== sid) return;   // 그 사이 새 촬영을 시작했다
   S.ses.cur = r.session;
   renderSessionPanel();
@@ -2217,7 +2241,7 @@ async function refreshSession(sid){
 
 async function syncSessionStatus(){
   const seq = S.ses.seq;
-  const r = await api('/api/session/status', {timeout:8000});
+  const r = await sesApi('/api/session/status', {timeout:8000});
   S.ses.maxSec = r.max_sec || S.ses.maxSec;
 
   const cap = r.capture || {}, tags = [];
