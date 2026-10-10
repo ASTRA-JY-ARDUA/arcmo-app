@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Arcmo 동작분석</title>
+<title>창미야 동작분석</title>
 <style>
 :root{
   --bg:#eef0f4; --surface:#ffffff; --surface2:#f7f8fa; --surface3:#eceef2;
@@ -497,8 +497,8 @@ main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 <div id="login">
   <div class="loginbox">
     <div class="brand">
-      <div class="brandmark">A</div>
-      <div class="brandtxt"><b>Arcmo</b><span>야구 동작분석</span></div>
+      <div class="brandmark">창</div>
+      <div class="brandtxt"><b>창미야</b><span>야구 동작분석</span></div>
     </div>
 
     <div class="card pad">
@@ -756,7 +756,7 @@ main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
           <div style="margin-top:14px">
             <label class="f">연결 서버</label>
             <input id="setSrv" class="inp" type="url" inputmode="url" autocapitalize="off" spellcheck="false" readonly>
-            <div class="hintline">이 앱은 Arcmo 클라우드(api.arcmo.xyz)에 연결됩니다. <b id="setIdTag" style="color:var(--ink)"></b></div>
+            <div class="hintline">이 앱은 창미야 클라우드(api.arcmo.xyz)에 연결됩니다. <b id="setIdTag" style="color:var(--ink)"></b></div>
           </div>
           <div class="row" style="margin-top:14px;gap:8px">
             <button class="btn primary grow" id="btnSaveSrv" style="display:none">저장하고 다시 연결</button>
@@ -981,7 +981,7 @@ function go(view, silent){
   S.view = view;
   $$('.view').forEach(v=>v.classList.toggle('on', v.id === 'v-'+view));
   $$('.navitem[data-go]').forEach(b=>b.classList.toggle('on', b.dataset.go===view));
-  $('#barTitle').textContent = TITLES[view] || 'Arcmo';
+  $('#barTitle').textContent = TITLES[view] || '창미야';
   setDrawer(false);
   updateBack();
   if (view === 'report' && S.rep && S.rep.repPlayer) resumePlayer(S.rep.repPlayer);
@@ -4183,7 +4183,7 @@ $('#btnClearCache').onclick = async ()=>{
   const lastId = LS.get('lastId','');
   if (lastId) $('#inId').value = lastId;
   syncServerField();
-  $('#loginFoot').textContent = 'Arcmo 클라우드에 연결합니다. 이름과 팀 코드를 입력하세요.';
+  $('#loginFoot').textContent = '창미야 클라우드에 연결합니다. 이름과 팀 코드를 입력하세요.';
 
   const keep = LS.get('keep', null);
   if (keep && keep.id){
